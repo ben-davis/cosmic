@@ -50,17 +50,22 @@ class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
         """Repositories on this UoW that track the aggregate roots they touched."""
         for attr_name in vars(self):
             repo = getattr(self, attr_name)
-            if isinstance(getattr(repo, "seen", None), set):
+            if isinstance(getattr(repo, "seen", None), dict):
                 yield repo
 
     def commit(self) -> None:
+        # Re-add every touched root so children appended *after* the initial
+        # add() (e.g. an account issuing a token) get cascaded into the session.
+        seen_roots = [root for repo in self._seen_repos() for root in repo.seen.values()]
+        for root in seen_roots:
+            self.session.add(root)
+
         # Flush so freshly-added (pending) roots get their PKs / FKs resolved.
         self.session.flush()
 
         # Aggregate-correct event collection: drain events from the roots the
         # repositories loaded/added (repo.seen). Falls back to scanning the
         # identity_map for a `domain_events` attribute when no repo tracks `seen`.
-        seen_roots = [root for repo in self._seen_repos() for root in repo.seen]
         if seen_roots:
             for root in seen_roots:
                 if hasattr(root, "pull_events"):

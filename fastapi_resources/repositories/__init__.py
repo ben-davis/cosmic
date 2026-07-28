@@ -126,7 +126,8 @@ class AggregateRepository:
         self.session = session
         self.context = context or {}
         self._id_field_name = id_field
-        self.seen: set = set()
+        # Keyed by id() because aggregate roots are MappedAsDataclass (unhashable).
+        self.seen: dict = {}
 
     def scope(self) -> list:
         """Row-level predicates applied to the root. Override / inject via factory."""
@@ -140,17 +141,17 @@ class AggregateRepository:
 
     def add(self, root) -> None:
         self.session.add(root)  # no flush — PKs are app-assigned (uuid7)
-        self.seen.add(root)
+        self.seen[id(root)] = root
 
     def remove(self, root) -> None:
         self.session.delete(root)
-        self.seen.add(root)
+        self.seen[id(root)] = root
 
-    def get(self, id) -> Any:
+    def get(self, pk) -> Any:
         from sqlalchemy.orm import selectinload
         from fastapi_resources.exceptions import NotFound
 
-        stmt = select(self.Db).where(self._pk() == id)
+        stmt = select(self.Db).where(self._pk() == pk)
         for rel in self.load:
             stmt = stmt.options(selectinload(getattr(self.Db, rel)))
         for predicate in self.scope():
@@ -159,7 +160,7 @@ class AggregateRepository:
         root = self.session.scalars(stmt).unique().one_or_none()
         if root is None:
             raise NotFound(f"{self.Db.__name__.lower()} not found")
-        self.seen.add(root)
+        self.seen[id(root)] = root
         return root
 
 
