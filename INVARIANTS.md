@@ -1,329 +1,214 @@
 # fastapi-resources Architecture Invariants
 
-These are the rules of this codebase. They describe what this library is, what it is not, and how every part of it behaves.
+These are the rules of this library as it exists now. It is a small
+**cosmicpython-style aggregate framework**: it provides the message-bus / unit-of-work /
+repository / domain-event machinery for building aggregate-oriented apps, plus a
+JSON:API **compound-document serializer** for reads and command responses.
+
+> Note: the name is historical. This library no longer generates CRUD, resources,
+> or JSON:API routing. HTTP routing lives in the consuming app (thin FastAPI
+> adapters that call `serialize()`), not here.
 
 ---
 
 ## What This Library Is
 
-fastapi-resources is a framework for structuring a system around cosmicpython principles. It provides four things that work together:
+A toolkit of independent pieces that work together:
 
-- **Repository factory** — generates data access classes from ORM models
-- **Command + handler factory** — generates commands and default handlers for CRUD operations
-- **Message bus** — routes commands to handlers and events to event handlers
-- **JSON:API HTTP layer** — serializes domain objects into JSON:API responses and wires up FastAPI routes
+- **`AggregateRoot`** — mixin that records domain events on aggregate roots
+- **`Command` / `Event`** — frozen-dataclass base classes for messages
+- **`MessageBus`** — routes commands to one handler and events to many
+- **`AbstractUnitOfWork` / `SqlAlchemyUnitOfWork`** — the transactional boundary; collects domain events at commit
+- **`AggregateRepository` / `build_aggregate_repo`** — loads a root + its children as a unit, scopes the root, tracks touched roots
+- **`serialize` / `serialize_many` / `AggregateSchema` / `Child`** — JSON:API compound-document serialization
+- **`Repository` / `UnitOfWork` ports** — Protocols the service layer types against
+- **`NotFound`** — the one shared exception (→ HTTP 404 in the app)
+- **`BaseSqlAlchemyRepo` / `build_sqlalchemy_repo`** — a plain non-aggregate repo, kept for generic use
 
-The HTTP layer is one output of the framework. Commands, handlers, and repositories are equally first-class — they exist independently of HTTP and can be used from anywhere in the system.
-
----
-
-## What a Resource Is
-
-A resource does exactly three things:
-
-1. **Parse** — extract typed attributes and relationships from the HTTP request
-2. **Dispatch or query** — for writes, send a Command to the message bus; for reads, call the repository
-3. **Serialize** — convert the result into a JSON:API response
-
-A resource contains no business logic, no transaction management, no domain decisions, and no SQLAlchemy.
+Everything is exported from `fastapi_resources/__init__.py`. There is no HTTP,
+FastAPI, or JSON:API *routing* code in this library.
 
 ---
 
-## The Repository
-
-Every resource has a repository. The repository is the only thing in the resource that touches the database — and the resource only ever calls it, never looks inside it.
-
-The repository has full read and write capability:
-
-- `add(obj)` — persist a new aggregate
-- `get(id, **filters)` — fetch a single aggregate by id, with optional auth filters
-- `list(inclusions, **filters)` — fetch a collection, with filtering, pagination, and eager loading
-
-All SQLAlchemy lives in the repository: `select()`, `joinedload()`, `where()` clauses, session access. None of it appears in the resource.
-
-`get_where()` is a method on the repository, not the resource. It returns SQLAlchemy filter expressions and is the customisation point for row-level access control. The repository calls it internally when building queries.
-
-The resource declares its repository via a class variable:
-
-```python
-class StarResource(SQLAlchemyResource[Star]):
-    Repo = SqlAlchemyStarRepository
-    Read = StarRead
-    ...
-```
-
-The base class instantiates the repository from the injected session and assigns it to `self.repo`. The resource never sees the session.
-
-```python
-# BaseSQLAlchemyResource.__init__:
-def __init__(self, session, ...):
-    self.repo = self.Repo(session)
-    # self.session does not exist
-```
-
----
-
-## The Message Bus
-
-The library provides `MessageBus`. It routes commands to a single handler and events to zero or more handlers.
-
-```python
-from fastapi_resources import MessageBus
-
-bus = MessageBus()
-```
-
-Rules:
-- **Command handlers** fail loudly — exceptions propagate to the caller
-- **Event handlers** fail silently — exceptions are logged, remaining handlers still run
-- After each handler, new domain events are collected from the UoW and queued for dispatch
-- The message bus returns the command handler's return value; event dispatch returns nothing
-
-All handler registration is explicit — no factory auto-registers anything. The application calls `bus.register(CommandType, handler)` or `bus.register_resource(commands, handlers)` to wire everything together.
-
-The router receives the bus at startup and makes it available to resources via `self.messagebus_handle`. The resource calls `self.messagebus_handle(cmd)` — it has no direct reference to the bus itself.
-
----
-
-## Writes — Command Dispatch
-
-Write methods construct a Command and dispatch it via `self.messagebus_handle`. They do not touch the repository for writes.
-
-Commands carry a pre-generated ID so the resource can re-fetch the result after the handler commits:
-
-```python
-def create(self, attributes, relationships) -> Star:
-    star_id = generate_id()
-    self.messagebus_handle(CreateStar(
-        id=star_id,
-        name=attributes["name"],
-        planet_ids=relationships.get("planets", []),
-    ))
-    return self.repo.get(star_id)
-```
-
-Rules:
-- Resources never call `session.add()`, `session.commit()`, or `uow.commit()`
-- Resources never open a `with uow:` block
-- Resources re-fetch the result via `self.repo.get(id)` after dispatch — they do not use the object returned by the handler directly, as it belongs to the handler's session
-- If a write method contains a domain `if`-branch, it belongs in a handler instead
-
----
-
-## The Unit of Work
-
-The UoW lives in the **handler layer**, not in resources. Handlers receive it as a parameter with a default pointing at the real implementation:
-
-```python
-def create_star(cmd: CreateStar, uow: AbstractUnitOfWork = SqlAlchemyUnitOfWork()):
-    with uow:
-        star = Star(id=cmd.id, name=cmd.name)
-        uow.stars.add(star)
-        uow.commit()
-```
-
-The message bus calls handlers with their default UoW. Tests pass `FakeUnitOfWork()` explicitly. Resources never hold or reference a UoW.
-
----
-
-## Reads — Repository Only
-
-List and retrieve operations go through `self.repo`. The repository handles filtering, pagination, and eager loading for `?include=`:
-
-```python
-def list(self):
-    return self.repo.list(
-        inclusions=self.inclusions,
-        context=self.context,
-    )
-
-def retrieve(self, id):
-    return self.repo.get(id, context=self.context)
-```
-
-The `context` dict carries request-scoped values (e.g. the authenticated user) that the repository uses in `get_where()`.
-
----
-
-## No `self.tasks`
-
-There is no `tasks` list on `Resource`. There is no `BackgroundTasks` parameter on route handlers.
-
-Post-commit side effects are handled by event handlers registered on the message bus, triggered by domain events emitted during the command handler.
-
----
-
-## The Factories
-
-Three factory functions cover the common cases. They are always called separately — commands, handlers, and resource are independent objects that the application wires together via the bus.
-
-### `build_commands`
-
-Generates frozen command and event dataclasses from the `Db` model and Pydantic schemas. Can be called from anywhere, including `domain/`.
-
-```python
-from fastapi_resources.domain import build_commands
-
-GalaxyCommands = build_commands(
-    Db=Galaxy,
-    Create=GalaxyCreate,
-    Update=GalaxyUpdate,
-)
-# Commands (intent, in):
-# GalaxyCommands.Create  →  CreateGalaxy(id, name, ...)
-# GalaxyCommands.Update  →  UpdateGalaxy(id, name?, ...)
-# GalaxyCommands.Delete  →  DeleteGalaxy(id)
-#
-# Events (fact, out):
-# GalaxyCommands.Created  →  GalaxyCreated(id)
-# GalaxyCommands.Updated  →  GalaxyUpdated(id)
-# GalaxyCommands.Deleted  →  GalaxyDeleted(id)
-```
-
-Generated commands and events are plain frozen dataclasses. Commands can be dispatched from anywhere — not just HTTP. Events can be subscribed to from anywhere.
-
-To override an event with a richer payload, replace the attribute before registering handlers:
+## Domain messages (`domain.py`)
 
 ```python
 @dataclass(frozen=True)
-class GalaxyCreated(Event):
-    id: int
-    name: str
+class Command: ...      # imperative intent, one handler, may fail loudly
 
-GalaxyCommands.Created = GalaxyCreated
+@dataclass(frozen=True)
+class Event: ...        # a fact that happened, zero-or-more handlers
 ```
 
-### `build_handlers`
+Concrete commands/events are app-defined frozen dataclasses inheriting these.
 
-Generates default CRUD handler functions from the commands and a UoW. Lives in the service layer.
+### `AggregateRoot`
 
 ```python
-from fastapi_resources.handlers import build_handlers
-
-GalaxyHandlers = build_handlers(
-    Db=Galaxy,
-    commands=GalaxyCommands,
-    uow=default_uow,
-)
-# GalaxyHandlers.create  →  create_galaxy(cmd: CreateGalaxy, uow=default_uow)
-# GalaxyHandlers.update  →  update_galaxy(cmd: UpdateGalaxy, uow=default_uow)
-# GalaxyHandlers.delete  →  delete_galaxy(cmd: DeleteGalaxy, uow=default_uow)
+class AggregateRoot:
+    def record(self, event: Event) -> None      # append to lazy self._events
+    def pull_events(self) -> list[Event]         # drain and return
 ```
 
-Each generated handler emits the corresponding event from `commands` by appending it to the entity's `domain_events` list before `uow.commit()`. The UoW drains `domain_events` after commit and the bus queues them for dispatch.
+Rules:
+- `_events` is a plain instance attribute created lazily — **never an ORM column**.
+- Aggregate roots mix this in: `class Calendar(AggregateRoot, BaseModel)`.
+- Roots emit events from their behavior methods via `self.record(...)`.
+- The UoW drains events with `pull_events()` at commit, from the roots its repos touched.
 
-### `build_sqlalchemy_resource`
+---
 
-Generates the HTTP layer only — repository, reads, and write dispatch. Takes no bus argument.
+## Repositories (`repositories/__init__.py`)
+
+### `AggregateRepository` + `build_aggregate_repo`
+
+One repository per aggregate **root**. Loads the whole aggregate and scopes the root.
 
 ```python
-from fastapi_resources.resources import build_sqlalchemy_resource
-
-GalaxyResource = build_sqlalchemy_resource(
-    Db=Galaxy,
-    Read=GalaxyRead,
-    Create=GalaxyCreate,
-    Update=GalaxyUpdate,
-    commands=GalaxyCommands,
+CalendarRepo = build_aggregate_repo(
+    Calendar,
+    load=["members"],                                   # child collections to eager-load
+    scope=lambda ctx: [Calendar.id.in_(...ctx["principal"]...)],  # row-level predicates on the root
 )
 ```
 
-### Bus Registration
+Behavior:
+- `__init__(session, context=None, id_field=None)` — creates `self.seen: dict` (keyed by `id()`).
+- `add(root)` — `session.add(root)` **without flush** (PKs are app-assigned uuid7), records `seen[id(root)] = root`.
+- `remove(root)` — `session.delete(root)`, records in `seen`.
+- `get(pk)` — `select(Root).where(pk_col == pk)`, `selectinload` each `load` relationship, apply `scope()` predicates, `.one_or_none()`; raises `NotFound` if absent/out-of-scope; records in `seen`.
+- `scope()` returns `[]` by default; `build_aggregate_repo`'s `scope=` becomes `scope(self.context)`.
 
-Registration is always explicit. The application wires commands to handlers after all three factories have run.
+Rules:
+- **There is no repository for child entities.** Children are reached through the loaded root.
+- `seen` is a **dict keyed by `id()`** because aggregate roots are `MappedAsDataclass` (unhashable) — never a `set`.
+- The parameter is `pk`, not `id` (must not shadow the builtin `id()`).
+
+### `BaseSqlAlchemyRepo` / `build_sqlalchemy_repo`
+
+A generic, non-aggregate repo (`add` with flush, `get`, `list`, `get_where`). Retained
+for occasional generic/read use; the aggregate repo is the primary path.
+
+---
+
+## Unit of Work (`unit_of_work.py`)
 
 ```python
-# Register individually:
-bus.register(GalaxyCommands.Create, GalaxyHandlers.create)
-bus.register(GalaxyCommands.Update, GalaxyHandlers.update)
-bus.register(GalaxyCommands.Delete, GalaxyHandlers.delete)
-
-# Or use the shorthand:
-bus.register_resource(GalaxyCommands, GalaxyHandlers)
+class AbstractUnitOfWork(ABC):
+    def __enter__(self) -> "AbstractUnitOfWork"
+    def __exit__(self, *args)                 # calls self.rollback()
+    def commit(self); def rollback(self)
+    def collect_new_events(self) -> Iterator[Event]
+    def repo_for(self, db_class)              # finds a repo attr whose .Db is db_class
 ```
 
-There are three levels of customisation, in increasing order of explicitness:
+`SqlAlchemyUnitOfWork(session_factory)`:
+- `__enter__` opens a fresh `self.session = session_factory()` and resets `collected_events`.
+- `__exit__` rolls back and closes the session.
+- `commit()` does, in order:
+  1. **Re-add** every seen root (`session.add(root)`), **skipping roots in `session.deleted`** — this cascades children appended *after* the initial `add()` (e.g. an account issuing a token) without resurrecting deleted roots.
+  2. `session.flush()`.
+  3. Collect events: for each repo with a `dict` `seen`, drain `root.pull_events()` from its roots. Fallback (no seen-tracking repos): scan `session.identity_map` for a `domain_events` attribute.
+  4. `session.commit()`.
+- `collect_new_events()` drains and clears `collected_events`.
 
-**1. Factory parameters** — for simple overrides:
+Rules:
+- A UoW is **per unit of work** (per command dispatch / per request). Instantiate freely; it's cheap.
+- Concrete UoWs subclass `SqlAlchemyUnitOfWork` and assign one repo per aggregate in `__enter__`.
+- The session is owned by the UoW and never handed out.
+
+---
+
+## Message Bus (`message_bus.py`)
+
+The bus is an app-level singleton: a dispatch table. The **UoW is passed at dispatch time**.
+
 ```python
-class GalaxyRepo(build_sqlalchemy_repo(Galaxy)):
-    def get_where(self, method):
-        return [Galaxy.owner_id == self.context["user_id"]]
-
-GalaxyResource = build_sqlalchemy_resource(..., Repo=GalaxyRepo, commands=GalaxyCommands)
+bus = MessageBus()
+bus.register(SomeCommand, handle_some_command)      # command → exactly one handler
+bus.register_projector(SomeEvent, project_some)     # event → append a handler (alias of register)
+bus.handle(command, uow)                            # dispatch
 ```
 
-**2. Custom handler** — for business logic that the default handler can't express:
-```python
-def create_galaxy(cmd: GalaxyCommands.Create, uow=default_uow):
-    with uow:
-        # custom logic here
-        ...
+Behavior of `handle(message, uow=None)`:
+- **Command** → look up its single handler (missing → `ValueError`). Call `handler(cmd, uow)` when a uow is passed, else `handler(cmd)`. After it returns, drain `uow.collect_new_events()` and queue them.
+- **Event** → call every registered handler `handler(event)`; exceptions are logged, not raised; remaining handlers still run.
+- Returns the command handler's return value.
 
-bus.register(GalaxyCommands.Create, create_galaxy)  # replaces the generated default
+Rules:
+- **Command handlers fail loudly**; **event handlers fail silently**.
+- Event handlers / projectors get their non-uow dependencies bound at bootstrap (e.g. `partial(on_event_created, schedule=...)`); they do **not** receive the command's uow.
+- The bus knows nothing about HTTP, sessions, or FastAPI.
+
+---
+
+## Serialization (`serialization.py`)
+
+Turns an aggregate into a **JSON:API compound document**.
+
+```python
+CALENDAR = AggregateSchema(
+    type="calendar",
+    read=CalendarRead,                                   # pydantic; must include `id`
+    children=[Child(attr="members", type="calendar_member", read=CalendarMemberRead)],
+)
+serialize(root, CALENDAR, self_url="/calendars/1")   # single
+serialize_many(roots, CALENDAR, self_url="/calendars")  # list (+ meta.count)
 ```
 
-**3. Full resource class** — for complex write shapes or non-standard dispatch:
-```python
-class StarResource(SQLAlchemyResource[Star]):
-    Repo = StarRepo
-    Read = StarRead
-    commands = StarCommands
+Output shape:
+- Root is the primary `data` (`{type, id, attributes, relationships}`); `id` is lifted out of attributes.
+- Children are `included` resource objects — each has `type` + `id` + `attributes` but **no `self` link** and no endpoint of their own — linked from the root's `relationships`.
+- `serialize_many` dedupes `included` by `(type, id)` and adds `meta.count`.
 
-    def create(self, attributes, relationships) -> Star:
-        star_id = generate_id()
-        self.messagebus_handle(StarCommands.Create(id=star_id, ...))
-        return self.repo.get(star_id)
+Rules:
+- Children are addressable only *through* the root. This is exactly what a JSON:API read client (make-resource) normalizes into its entity store.
+- Value objects (no identity) do **not** become `included` resources; embed them in attributes.
+
+---
+
+## Ports (`ports.py`)
+
+Runtime-checkable Protocols the service layer types against, so handlers can be
+driven by in-memory fakes:
+
+```python
+class Repository(Protocol):    def add(self, obj); def get(self, pk, ...)
+class UnitOfWork(Protocol):    __enter__/__exit__; def repo_for(...); def commit(self)
 ```
 
 ---
 
-## Error Mapping
+## What This Library Does NOT Do
 
-Domain exceptions are mapped to HTTP responses at the router level. Handlers raise domain exceptions; resources do not catch them. The mapping table is application-defined and registered with the router at startup.
-
-```python
-# In JSONAPIResourceRoute.get_route_handler:
-except DomainException as exc:
-    response = JSONResponse(status_code=400, content=parse_exception(exc))
-except NotFound:
-    response = JSONResponse(status_code=404, ...)
-```
-
----
-
-## What This Library Owns
-
-- **`MessageBus`** — command/event routing, queue draining, fail-loud/fail-silent semantics
-- **`build_sqlalchemy_repo(Db)`** — repository factory with full read/write capability
-- **`build_sqlalchemy_resource(...)`** — full stack factory: repo + commands + handlers + resource class
-- **JSON:API serialization** — `build_resource_object`, `build_response`, `build_document_links`
-- **Relationship resolution** — `get_relationships()`, `get_related()`, `_zipped_inclusions_with_resource()`
-- **Schema introspection** — `get_relationships_from_schema()`, association proxy support
-- **Pagination** — `Paginator` classes, cursor/limit handling
-- **`Resource.registry`** — `Db` class → Resource class lookup
-- **Mixin composition** — `RetrieveResourceMixin`, `ListResourceMixin`, `CreateResourceMixin`, etc.
+- No `build_commands` / `build_handlers` (generated CRUD).
+- No `Resource` classes, mixins, or `build_sqlalchemy_resource`.
+- No JSON:API **routing** / route generation. The app writes thin FastAPI routers
+  that dispatch commands and call `serialize()`.
 
 ---
 
 ## Testing
 
-Resources are testable without an HTTP server by instantiating them with a fake repository and a spy for the message bus handle:
+- `tests/test_aggregate.py` — end-to-end spine: `AggregateRoot` + `build_aggregate_repo`
+  (scope + `seen`) + UoW event collection + `bus.handle(cmd, uow)` + projector.
+- `tests/test_serialization.py` — compound documents (root + `included`, no child self-links).
+- `tests/test_message_bus.py`, `tests/test_unit_of_work.py`, `tests/test_repositories.py`, `tests/test_ports.py`.
+- Run: `PYTHONPATH=. python -m pytest -q` (uses the parent app's venv).
 
-```python
-def test_create_dispatches_command():
-    repo = FakeStarRepository()
-    dispatched = []
+---
 
-    resource = StarResource(
-        session=FakeSession(),
-        messagebus_handle=lambda cmd: dispatched.append(cmd),
-        context={"user_id": some_uuid},
-    )
-    resource.create(attributes={"name": "Sirius"}, relationships={})
+## Module Reference
 
-    assert isinstance(dispatched[0], CreateStar)
-    assert dispatched[0].name == "Sirius"
 ```
-
-Handlers are testable independently with `FakeUnitOfWork()`, without touching the resource or HTTP layer.
+fastapi_resources/
+├── __init__.py         # public exports (see "What This Library Is")
+├── domain.py           # Command, Event, AggregateRoot
+├── message_bus.py      # MessageBus (handle(message, uow))
+├── unit_of_work.py     # AbstractUnitOfWork, SqlAlchemyUnitOfWork
+├── repositories/       # BaseSqlAlchemyRepo, AggregateRepository, build_* factories
+├── serialization.py    # AggregateSchema, Child, serialize, serialize_many
+├── ports.py            # Repository, UnitOfWork Protocols
+├── exceptions.py       # NotFound
+└── types.py
+```
