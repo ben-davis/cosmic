@@ -56,9 +56,11 @@ class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
     def commit(self) -> None:
         # Re-add every touched root so children appended *after* the initial
         # add() (e.g. an account issuing a token) get cascaded into the session.
+        # Skip roots pending deletion — re-adding would resurrect them.
         seen_roots = [root for repo in self._seen_repos() for root in repo.seen.values()]
         for root in seen_roots:
-            self.session.add(root)
+            if root not in self.session.deleted:
+                self.session.add(root)
 
         # Flush so freshly-added (pending) roots get their PKs / FKs resolved.
         self.session.flush()
