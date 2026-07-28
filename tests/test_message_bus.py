@@ -98,50 +98,13 @@ class TestMessageBusDomainEventDraining:
 
         uow = FakeUoW()
 
-        def handler(cmd, uow=uow):
+        def handler(cmd, uow):
             uow._events.append(ThingDone(value=cmd.value))
             return cmd.value
 
         bus.register(DoTheThing, handler)
         bus.register(ThingDone, lambda e: received_events.append(e.value))
 
-        bus.handle(DoTheThing(value=99))
+        bus.handle(DoTheThing(value=99), uow=uow)
 
         assert received_events == [99]
-
-    def test_register_resource_registers_crud_commands(self):
-        bus = MessageBus()
-        results = []
-
-        @dataclasses.dataclass(frozen=True)
-        class CreateFoo(Command):
-            name: str
-
-        @dataclasses.dataclass(frozen=True)
-        class UpdateFoo(Command):
-            id: int
-            name: str
-
-        @dataclasses.dataclass(frozen=True)
-        class DeleteFoo(Command):
-            id: int
-
-        class FakeCmds:
-            Create = CreateFoo
-            Update = UpdateFoo
-            Delete = DeleteFoo
-
-        class FakeHandlers:
-            create = staticmethod(lambda cmd: results.append(("create", cmd.name)))
-            update = staticmethod(lambda cmd: results.append(("update", cmd.id)))
-            delete = staticmethod(lambda cmd: results.append(("delete", cmd.id)))
-
-        bus.register_resource(FakeCmds, FakeHandlers)
-
-        bus.handle(CreateFoo(name="alpha"))
-        bus.handle(UpdateFoo(id=1, name="beta"))
-        bus.handle(DeleteFoo(id=2))
-
-        assert ("create", "alpha") in results
-        assert ("update", 1) in results
-        assert ("delete", 2) in results

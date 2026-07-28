@@ -2,8 +2,7 @@
 import pytest
 from sqlalchemy.orm import Session
 
-from fastapi_resources import build_sqlalchemy_repo
-from fastapi_resources.resources.sqlalchemy.exceptions import NotFound
+from fastapi_resources import NotFound, build_sqlalchemy_repo
 from tests.resources.sqlalchemy_base import Base
 from tests.resources.sqlalchemy_models import (
     Galaxy,

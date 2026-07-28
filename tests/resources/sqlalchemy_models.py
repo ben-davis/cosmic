@@ -1,127 +1,15 @@
+"""Minimal ORM models + repos for the repository/uow/ports tests."""
 from typing import Optional
 
-from pydantic import BaseModel, Field
 from sqlalchemy import ForeignKey, create_engine
-from sqlalchemy.ext.associationproxy import AssociationProxy, association_proxy
-from sqlalchemy.ext.hybrid import hybrid_property
-from sqlalchemy.orm import (
-    Mapped,
-    mapped_column,
-    relationship,
-)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from fastapi_resources import build_commands, build_sqlalchemy_repo
-from fastapi_resources.resources import SQLAlchemyResource
-from fastapi_resources.resources.sqlalchemy import paginators
-from fastapi_resources.resources.sqlalchemy.mixins import DeleteAllResourceMixin
+from fastapi_resources import build_sqlalchemy_repo
 from tests.resources.sqlalchemy_base import Base
 
-from .planet import Planet, PlanetCreate, PlanetRead
-
-
-sqlite_url = "sqlite+pysqlite://"
 engine = create_engine(
-    sqlite_url, connect_args={"check_same_thread": False}, future=True
+    "sqlite+pysqlite://", connect_args={"check_same_thread": False}, future=True
 )
-
-
-class Element(Base):
-    __tablename__ = "element"
-
-    id: Mapped[int] = mapped_column(primary_key=True, init=False)
-    name: Mapped[str]
-
-
-class ElementRead(BaseModel):
-    id: int
-    name: str
-
-
-class Star(Base):
-    __tablename__ = "star"
-
-    id: Mapped[int] = mapped_column(primary_key=True, init=False)
-
-    name: Mapped[str]
-    color: Mapped[str] = mapped_column(default="")
-    brightness: Mapped[int] = mapped_column(default=1)
-
-    planets: Mapped[list[Planet]] = relationship(
-        back_populates="star", default_factory=list
-    )
-    galaxy: Mapped["Galaxy"] = relationship(back_populates="stars", default=None)
-    galaxy_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("galaxy.id"),
-        default=None,
-    )
-
-    _element_associations: Mapped[list["StarElementAssociation"]] = relationship(
-        back_populates="star",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        default_factory=list,
-    )
-    elements: AssociationProxy[list[Element]] = association_proxy(
-        "_element_associations",
-        "element",
-        default_factory=list,
-        creator=lambda element: StarElementAssociation(element=element),
-    )
-
-    @hybrid_property
-    def element_associations(self):
-        return self._element_associations
-
-    @element_associations.inplace.setter
-    def _element_associations_setter(self, value: list["StarElementAssociation"]):
-        self._element_associations = value
-
-
-class StarElementAssociation(Base):
-    __tablename__ = "link_data_topic_association"
-
-    element_id: Mapped[str] = mapped_column(
-        ForeignKey("element.id"),
-        primary_key=True,
-        init=False,
-    )
-    star_id: Mapped[str] = mapped_column(
-        ForeignKey("star.id"), primary_key=True, init=False
-    )
-
-    element: Mapped[Element] = relationship()
-    star: Mapped[Star] = relationship(
-        back_populates="_element_associations", default=None
-    )
-
-
-class StarCreate(BaseModel):
-    name: str
-
-    __relationships__ = ["planets", "galaxy"]
-
-
-class StarRead(BaseModel):
-    id: int
-    name: str
-    color: str
-    brightness: int = 1
-
-    __relationships__ = ["planets", "galaxy", "elements"]
-
-
-class StarUpdate(BaseModel):
-    name: Optional[str] = None
-
-    __relationships__ = ["planets", "galaxy"]
-
-
-class Cluster(Base):
-    __tablename__ = "cluster"
-
-    id: Mapped[int] = mapped_column(primary_key=True, init=False)
-
-    name: Mapped[str]
 
 
 class Galaxy(Base):
@@ -130,164 +18,33 @@ class Galaxy(Base):
     id: Mapped[int] = mapped_column(primary_key=True, init=False)
     name: Mapped[str]
 
-    stars: Mapped[list[Star]] = relationship(
+    stars: Mapped[list["Star"]] = relationship(
         back_populates="galaxy", default_factory=list
     )
-    favorite_planets: Mapped[list[Planet]] = relationship(
-        back_populates="favorite_galaxy", default_factory=list
-    )
-
-    cluster_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("cluster.id"), init=False
-    )
-    cluster: Mapped[Optional[Cluster]] = relationship(default=None)
 
 
-class GalaxyCreate(BaseModel):
-    name: str
-
-    __relationships__ = ["stars", "favorite_planets"]
-
-
-class GalaxyRead(BaseModel):
-    id: int
-    name: str
-
-    __relationships__ = ["stars", "favorite_planets"]
-
-
-GalaxyCreate.model_rebuild()
-StarRead.model_rebuild()
-StarCreate.model_rebuild()
-PlanetRead.model_rebuild()
-
-
-class GalaxyUpdate(BaseModel):
-    name: Optional[str] = None
-
-
-class Moon(Base):
-    __tablename__ = "moon"
+class Star(Base):
+    __tablename__ = "star"
 
     id: Mapped[int] = mapped_column(primary_key=True, init=False)
     name: Mapped[str]
-    planet_id: Mapped[Optional[str]] = mapped_column(
-        ForeignKey("planet.id"), init=False
+    color: Mapped[str] = mapped_column(default="")
+
+    galaxy_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("galaxy.id"), default=None
     )
-    planet: Mapped[Optional[Planet]] = relationship(default=None, init=False)
+    galaxy: Mapped[Optional[Galaxy]] = relationship(back_populates="stars", default=None)
 
 
-class MoonCreate(BaseModel):
-    name: str
-
-    __relationships__ = ["planet"]
-
-
-class MoonRead(BaseModel):
-    id: int
-    name: str
-    planet_id: Optional[str] = None
-
-    __relationships__ = ["planet"]
-
-
-class Asteroid(Base):
-    __tablename__ = "asteroid"
-
-    id: Mapped[int] = mapped_column(primary_key=True, init=False)
-    name: Mapped[str]
-
-
-class AsteroidRead(BaseModel):
-    id: str = Field(alias="name")
-
-
-# --- Repos ---
+GalaxyRepo = build_sqlalchemy_repo(Galaxy)
 
 _StarBaseRepo = build_sqlalchemy_repo(Star)
 
 
 class StarFilteredRepo(_StarBaseRepo):
-    """Star repo with optional galaxy-name filtering via request context."""
-
-    def get_joins(self):
-        request = self.context.get("request")
-        if request and request.query_params.get("filter[galaxy.name]"):
-            return [Star.galaxy]
-        return super().get_joins()
+    """Star repo with optional name filtering via context."""
 
     def get_where(self, method):
-        request = self.context.get("request")
-        if request and (galaxy_name := request.query_params.get("filter[galaxy.name]")):
-            return [Galaxy.name == galaxy_name]
+        if name := self.context.get("only_name"):
+            return [Star.name == name]
         return []
-
-
-GalaxyRepo = build_sqlalchemy_repo(Galaxy)
-PlanetRepo = build_sqlalchemy_repo(Planet)
-MoonRepo = build_sqlalchemy_repo(Moon)
-AsteroidRepo = build_sqlalchemy_repo(Asteroid)
-ElementRepo = build_sqlalchemy_repo(Element)
-
-# --- Commands ---
-
-StarCommands = build_commands(Star, Create=StarCreate, Update=StarUpdate)
-GalaxyCommands = build_commands(Galaxy, Create=GalaxyCreate, Update=GalaxyUpdate)
-PlanetCommands = build_commands(Planet, Create=PlanetCreate)
-MoonCommands = build_commands(Moon, Create=MoonCreate)
-
-# --- Resources ---
-
-
-class PlanetResource(SQLAlchemyResource):
-    name = "planet"
-    Db = Planet
-    Read = PlanetRead
-    Create = PlanetCreate
-    Repo = PlanetRepo
-    commands = PlanetCommands
-
-
-class StarResource(DeleteAllResourceMixin, SQLAlchemyResource[Star]):
-    name = "star"
-    Db = Star
-    Read = StarRead
-    Create = StarCreate
-    Update = StarUpdate
-    Paginator = paginators.LimitOffsetPaginator
-    Repo = StarFilteredRepo
-    commands = StarCommands
-
-
-class GalaxyResource(SQLAlchemyResource[Galaxy]):
-    name = "galaxy"
-    Db = Galaxy
-    Read = GalaxyRead
-    Create = GalaxyCreate
-    Update = GalaxyUpdate
-    Repo = GalaxyRepo
-    commands = GalaxyCommands
-
-
-class MoonResource(SQLAlchemyResource[Moon]):
-    name = "moon"
-    Db = Moon
-    Read = MoonRead
-    Create = MoonCreate
-    Repo = MoonRepo
-    commands = MoonCommands
-
-
-class AsteroidResource(SQLAlchemyResource[Asteroid]):
-    name = "asteroid"
-    Db = Asteroid
-    Read = AsteroidRead
-    id_field = "name"
-    Repo = AsteroidRepo
-
-
-class ElementResource(SQLAlchemyResource[Element]):
-    name = "element"
-    Db = Element
-    Read = ElementRead
-    Repo = ElementRepo

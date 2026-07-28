@@ -26,7 +26,7 @@ class BaseSqlAlchemyRepo:
         self.session.delete(obj)
 
     def get(self, id, method: str = "retrieve", options: Optional[list] = None) -> Any:
-        from fastapi_resources.resources.sqlalchemy.exceptions import NotFound
+        from fastapi_resources.exceptions import NotFound
 
         stmt = self.get_select(method=method).where(self._id_field() == id)
         if options:
