@@ -104,3 +104,79 @@ def build_sqlalchemy_repo(Db: type) -> type:
         (BaseSqlAlchemyRepo,),
         {"Db": Db},
     )
+
+
+# --- Aggregate repositories ---------------------------------------------------
+
+class AggregateRepository:
+    """Repository for a single aggregate root.
+
+    Loads the whole aggregate (root + declared child collections) as a unit,
+    scopes the *root* for row-level access, and tracks every root it loads/adds
+    in ``.seen`` so the UnitOfWork can drain their domain events at commit.
+
+    There is no repository for child entities — children are reached through the
+    loaded root.
+    """
+
+    Db: type              # the aggregate root model
+    load: tuple = ()      # child relationship attribute names to eager-load
+
+    def __init__(self, session: Session, context: Optional[dict] = None, id_field: Optional[str] = None):
+        self.session = session
+        self.context = context or {}
+        self._id_field_name = id_field
+        self.seen: set = set()
+
+    def scope(self) -> list:
+        """Row-level predicates applied to the root. Override / inject via factory."""
+        return []
+
+    def _pk(self):
+        if self._id_field_name:
+            return getattr(self.Db, self._id_field_name)
+        pk_name = sa_inspect(self.Db).mapper.primary_key[0].key
+        return getattr(self.Db, pk_name)
+
+    def add(self, root) -> None:
+        self.session.add(root)  # no flush — PKs are app-assigned (uuid7)
+        self.seen.add(root)
+
+    def remove(self, root) -> None:
+        self.session.delete(root)
+        self.seen.add(root)
+
+    def get(self, id) -> Any:
+        from sqlalchemy.orm import selectinload
+        from fastapi_resources.exceptions import NotFound
+
+        stmt = select(self.Db).where(self._pk() == id)
+        for rel in self.load:
+            stmt = stmt.options(selectinload(getattr(self.Db, rel)))
+        for predicate in self.scope():
+            stmt = stmt.where(predicate)
+
+        root = self.session.scalars(stmt).unique().one_or_none()
+        if root is None:
+            raise NotFound(f"{self.Db.__name__.lower()} not found")
+        self.seen.add(root)
+        return root
+
+
+def build_aggregate_repo(Root: type, *, load=(), scope=None, id_field=None) -> type:
+    """Generate an AggregateRepository for a root.
+
+    `load`  — child relationship attribute names loaded with the root.
+    `scope` — optional `(context) -> [predicates]` for row-level access on the root.
+    """
+    attrs: dict = {"Db": Root, "load": tuple(load)}
+    if scope is not None:
+        attrs["scope"] = lambda self: scope(self.context)
+    if id_field is not None:
+        attrs["_default_id_field"] = id_field
+
+        def __init__(self, session, context=None, id_field=id_field):
+            AggregateRepository.__init__(self, session, context, id_field)
+
+        attrs["__init__"] = __init__
+    return type(f"{Root.__name__}Repository", (AggregateRepository,), attrs)

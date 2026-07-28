@@ -46,16 +46,32 @@ class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
         super().__exit__(*args)
         self.session.close()
 
+    def _seen_repos(self):
+        """Repositories on this UoW that track the aggregate roots they touched."""
+        for attr_name in vars(self):
+            repo = getattr(self, attr_name)
+            if isinstance(getattr(repo, "seen", None), set):
+                yield repo
+
     def commit(self) -> None:
-        # Flush first so freshly-added (pending) objects enter the identity_map;
-        # otherwise their domain_events would be missed (they live in session.new).
+        # Flush so freshly-added (pending) roots get their PKs / FKs resolved.
         self.session.flush()
-        # Collect domain events before committing (identity_map cleared after commit)
-        for obj in list(self.session.identity_map.values()):
-            events = list(getattr(obj, "domain_events", []))
-            self.collected_events.extend(events)
-            if hasattr(obj, "domain_events"):
-                obj.domain_events.clear()
+
+        # Aggregate-correct event collection: drain events from the roots the
+        # repositories loaded/added (repo.seen). Falls back to scanning the
+        # identity_map for a `domain_events` attribute when no repo tracks `seen`.
+        seen_roots = [root for repo in self._seen_repos() for root in repo.seen]
+        if seen_roots:
+            for root in seen_roots:
+                if hasattr(root, "pull_events"):
+                    self.collected_events.extend(root.pull_events())
+        else:
+            for obj in list(self.session.identity_map.values()):
+                events = list(getattr(obj, "domain_events", []))
+                self.collected_events.extend(events)
+                if hasattr(obj, "domain_events"):
+                    obj.domain_events.clear()
+
         self.session.commit()
 
     def rollback(self) -> None:

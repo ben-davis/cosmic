@@ -1,7 +1,6 @@
-import inspect
 import logging
 from collections import defaultdict
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from fastapi_resources.domain import Command, Event
 
@@ -9,6 +8,16 @@ logger = logging.getLogger(__name__)
 
 
 class MessageBus:
+    """App-level dispatch table for commands and events.
+
+    The bus is a singleton (one per app) holding only the message→handler map.
+    The per-request execution context (the UnitOfWork) is passed at dispatch:
+    ``bus.handle(command, uow)``. Command handlers are ``(command, uow)``; after a
+    command runs, the bus drains that uow's new domain events and dispatches them
+    to event handlers / projectors (registered as ``(event)`` with their own deps
+    bound at bootstrap).
+    """
+
     def __init__(self):
         self._command_handlers: dict[type, Callable[..., Any]] = {}
         self._event_handlers: dict[type, list[Callable[..., Any]]] = defaultdict(list)
@@ -21,58 +30,39 @@ class MessageBus:
         else:
             raise ValueError(f"{message_type} is not a Command or Event subclass")
 
-    def register_resource(self, commands, handlers) -> None:
-        """Register all CRUD command handlers from a build_handlers namespace."""
-        for cmd_attr, handler_attr in (
-            ("Create", "create"),
-            ("Update", "update"),
-            ("Delete", "delete"),
-        ):
-            cmd_type = getattr(commands, cmd_attr, None)
-            handler = getattr(handlers, handler_attr, None)
-            if cmd_type is not None and handler is not None:
-                self.register(cmd_type, handler)
+    # Read-side subscribers (projectors). Alias of register for clarity at call sites.
+    def register_projector(self, event_type: type, handler: Callable[..., Any]) -> None:
+        self.register(event_type, handler)
 
-    def handle(self, message):
-        """Dispatch a command or event, draining any domain events afterward."""
+    def handle(self, message, uow=None):
+        """Dispatch a command (with its UoW) or an event, draining domain events."""
         queue = [message]
         result = None
 
         while queue:
             msg = queue.pop(0)
             if isinstance(msg, Command):
-                result = self._handle_command(msg, queue)
+                result = self._handle_command(msg, uow, queue)
             elif isinstance(msg, Event):
                 self._handle_event(msg, queue)
 
         return result
 
-    def _handle_command(self, cmd: Command, queue: list):
+    def _handle_command(self, cmd: Command, uow, queue: list):
         handler = self._command_handlers.get(type(cmd))
         if handler is None:
             raise ValueError(f"No handler registered for command {type(cmd).__name__}")
 
-        result = handler(cmd)
-        queue.extend(self._collect_events(handler))
+        result = handler(cmd, uow) if uow is not None else handler(cmd)
+        if uow is not None:
+            queue.extend(uow.collect_new_events())
         return result
 
     def _handle_event(self, event: Event, queue: list):
         for handler in self._event_handlers.get(type(event), []):
             try:
                 handler(event)
-                queue.extend(self._collect_events(handler))
             except Exception:
                 logger.exception(
                     "Event handler %s failed for %s", handler, type(event).__name__
                 )
-
-    def _collect_events(self, handler: Callable[..., Any]) -> list[Event]:
-        """Drain domain events from the handler's default UoW parameter, if any."""
-        sig = inspect.signature(handler)
-        for param in sig.parameters.values():
-            if param.default is inspect.Parameter.empty:
-                continue
-            uow = param.default
-            if hasattr(uow, "collect_new_events"):
-                return list(uow.collect_new_events())
-        return []
