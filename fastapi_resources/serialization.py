@@ -6,6 +6,15 @@ but **no `self` link** and no endpoint of their own), linked from the root's
 `relationships`. This is exactly the shape JSON:API read clients (e.g.
 make-resource) normalize into their entity store — the children become cached
 entities keyed by type/id, reachable through the root.
+
+Two kinds of link come out of an aggregate, and they are not the same thing:
+
+* `Child`  — an entity *inside* this aggregate. Serialized as a relationship
+  **and** an `included` body, because the root owns it and loaded it.
+* `Ref`    — a reference to a *different* aggregate, held by id (DDD's
+  reference-by-identity rule). Serialized as a relationship **with no `included`
+  body**: this document does not own that aggregate and must not speak for its
+  contents. The client resolves it from its store or fetches it separately.
 """
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -15,12 +24,27 @@ from pydantic import BaseModel
 
 @dataclass
 class Child:
-    """Declares a child collection/relation on an aggregate root."""
+    """An entity owned by this aggregate — relationship + `included` body."""
 
     attr: str                 # relationship attribute on the root (e.g. "members")
     type: str                 # JSON:API type for the child (e.g. "calendar_member")
     read: type[BaseModel]     # pydantic read schema for the child (must include `id`)
     many: bool = True
+
+
+@dataclass
+class Ref:
+    """A by-id reference to another aggregate — relationship, no `included` body."""
+
+    attr: str                      # id attribute on the root (e.g. "event_id")
+    type: str                      # JSON:API type of the referenced root
+    name: Optional[str] = None     # relationship name; defaults to `attr` sans "_id"
+
+    @property
+    def relationship_name(self) -> str:
+        if self.name:
+            return self.name
+        return self.attr[:-3] if self.attr.endswith("_id") else self.attr
 
 
 @dataclass
@@ -30,6 +54,7 @@ class AggregateSchema:
     type: str                 # JSON:API type for the root (e.g. "calendar")
     read: type[BaseModel]     # pydantic read schema for the root (must include `id`)
     children: list[Child] = field(default_factory=list)
+    refs: list[Ref] = field(default_factory=list)
 
 
 def _resource_object(obj: Any, type_: str, read: type[BaseModel]) -> dict:
@@ -59,6 +84,12 @@ def serialize(root: Any, schema: AggregateSchema, *, self_url: Optional[str] = N
             if value is not None:
                 included.append(_resource_object(value, child.type, child.read))
 
+    for ref in schema.refs:
+        ref_id = getattr(root, ref.attr, None)
+        relationships[ref.relationship_name] = {
+            "data": ({"type": ref.type, "id": str(ref_id)} if ref_id else None)
+        }
+
     if relationships:
         data["relationships"] = relationships
 
@@ -71,9 +102,17 @@ def serialize(root: Any, schema: AggregateSchema, *, self_url: Optional[str] = N
 
 
 def serialize_many(
-    roots: list, schema: AggregateSchema, *, self_url: Optional[str] = None
+    roots: list,
+    schema: AggregateSchema,
+    *,
+    self_url: Optional[str] = None,
+    next_cursor: Optional[str] = None,
 ) -> dict:
-    """Serialize a list of aggregate roots into a JSON:API list compound document."""
+    """Serialize a list of aggregate roots into a JSON:API list compound document.
+
+    `meta.count` is the size of *this page*. When `next_cursor` is given, a
+    `links.next` is emitted — cursor clients treat its absence as "last page".
+    """
     data: list = []
     included: list = []
     seen: set = set()
@@ -90,6 +129,13 @@ def serialize_many(
     document: dict = {"data": data, "meta": {"count": len(data)}}
     if included:
         document["included"] = included
+
+    links: dict = {}
     if self_url:
-        document["links"] = {"self": self_url}
+        links["self"] = self_url
+        if next_cursor:
+            joiner = "&" if "?" in self_url else "?"
+            links["next"] = f"{self_url}{joiner}page[cursor]={next_cursor}"
+    if links:
+        document["links"] = links
     return document

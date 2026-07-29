@@ -16,11 +16,17 @@ class MessageBus:
     command runs, the bus drains that uow's new domain events and dispatches them
     to event handlers / projectors (registered as ``(event)`` with their own deps
     bound at bootstrap).
+
+    Event handlers fail *soft* — one broken subscriber must not undo a command
+    that already committed. That also makes it easy for a permanently broken
+    handler to go unnoticed, so pass `on_error` to escalate (alerting, a failing
+    test) rather than relying on someone reading the logs.
     """
 
-    def __init__(self):
+    def __init__(self, on_error: Optional[Callable[[BaseException, Any], None]] = None):
         self._command_handlers: dict[type, Callable[..., Any]] = {}
         self._event_handlers: dict[type, list[Callable[..., Any]]] = defaultdict(list)
+        self._on_error = on_error
 
     def register(self, message_type: type, handler: Callable[..., Any]) -> None:
         if issubclass(message_type, Command):
@@ -29,10 +35,6 @@ class MessageBus:
             self._event_handlers[message_type].append(handler)
         else:
             raise ValueError(f"{message_type} is not a Command or Event subclass")
-
-    # Read-side subscribers (projectors). Alias of register for clarity at call sites.
-    def register_projector(self, event_type: type, handler: Callable[..., Any]) -> None:
-        self.register(event_type, handler)
 
     def handle(self, message, uow=None):
         """Dispatch a command (with its UoW) or an event, draining domain events."""
@@ -62,7 +64,17 @@ class MessageBus:
         for handler in self._event_handlers.get(type(event), []):
             try:
                 handler(event)
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "Event handler %s failed for %s", handler, type(event).__name__
                 )
+                self._report(exc, event)
+
+    def _report(self, exc: BaseException, event: Any) -> None:
+        """Escalate a failed event handler. A broken `on_error` must not mask it."""
+        if self._on_error is None:
+            return
+        try:
+            self._on_error(exc, event)
+        except Exception:
+            logger.exception("MessageBus on_error hook itself failed")

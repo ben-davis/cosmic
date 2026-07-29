@@ -20,17 +20,6 @@ class AbstractUnitOfWork(ABC):
     @abstractmethod
     def collect_new_events(self) -> Iterator[Event]: ...
 
-    def repo_for(self, db_class):
-        """Find the repository on this UoW whose Db class matches db_class."""
-        for attr_name in vars(self):
-            repo = getattr(self, attr_name)
-            if hasattr(repo, "Db") and repo.Db is db_class:
-                return repo
-        raise ValueError(
-            f"No repository found on {type(self).__name__} for {db_class.__name__}. "
-            f"Ensure your UoW assigns a repo with Db={db_class.__name__} in __enter__."
-        )
-
 
 class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
     def __init__(self, session_factory):
@@ -65,19 +54,12 @@ class SqlAlchemyUnitOfWork(AbstractUnitOfWork):
         # Flush so freshly-added (pending) roots get their PKs / FKs resolved.
         self.session.flush()
 
-        # Aggregate-correct event collection: drain events from the roots the
-        # repositories loaded/added (repo.seen). Falls back to scanning the
-        # identity_map for a `domain_events` attribute when no repo tracks `seen`.
-        if seen_roots:
-            for root in seen_roots:
-                if hasattr(root, "pull_events"):
-                    self.collected_events.extend(root.pull_events())
-        else:
-            for obj in list(self.session.identity_map.values()):
-                events = list(getattr(obj, "domain_events", []))
-                self.collected_events.extend(events)
-                if hasattr(obj, "domain_events"):
-                    obj.domain_events.clear()
+        # Aggregate-correct event collection: drain events from exactly the roots
+        # the repositories loaded or added (repo.seen). Anything not reached
+        # through a repository is not an aggregate root and has no events.
+        for root in seen_roots:
+            if hasattr(root, "pull_events"):
+                self.collected_events.extend(root.pull_events())
 
         self.session.commit()
 

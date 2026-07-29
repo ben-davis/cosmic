@@ -81,6 +81,67 @@ class TestMessageBusEvents:
         bus = MessageBus()
         bus.handle(ThingDone(value=1))  # should not raise
 
+    def test_one_failing_handler_does_not_stop_the_others(self):
+        bus = MessageBus()
+        reached = []
+
+        def bad(e):
+            raise RuntimeError("boom")
+
+        bus.register(ThingDone, bad)
+        bus.register(ThingDone, lambda e: reached.append(e.value))
+        bus.handle(ThingDone(value=3))
+
+        assert reached == [3]
+
+
+def _raises(message):
+    def handler(*args):
+        raise RuntimeError(message)
+
+    return handler
+
+
+class TestMessageBusErrorEscalation:
+    """Soft-failing event handlers must still be *reportable*, otherwise a
+    permanently broken subscriber is indistinguishable from a working one."""
+
+    def test_on_error_receives_the_exception_and_the_event(self):
+        reported = []
+        bus = MessageBus(on_error=lambda exc, event: reported.append((exc, event)))
+        bus.register(ThingDone, _raises("boom"))
+
+        event = ThingDone(value=1)
+        bus.handle(event)
+
+        [(exc, reported_event)] = reported
+        assert isinstance(exc, RuntimeError)
+        assert str(exc) == "boom"
+        assert reported_event is event
+
+    def test_on_error_is_not_called_when_handlers_succeed(self):
+        reported = []
+        bus = MessageBus(on_error=lambda exc, event: reported.append(exc))
+        bus.register(ThingDone, lambda e: None)
+        bus.handle(ThingDone(value=1))
+        assert reported == []
+
+    def test_a_broken_on_error_hook_cannot_break_dispatch(self):
+        bus = MessageBus(on_error=_raises("the hook itself is broken"))
+        reached = []
+        bus.register(ThingDone, _raises("boom"))
+        bus.register(ThingDone, lambda e: reached.append(e.value))
+
+        bus.handle(ThingDone(value=5))  # must not raise
+        assert reached == [5]
+
+    def test_command_handler_errors_still_propagate(self):
+        """on_error is for events only; commands must keep failing loudly."""
+        bus = MessageBus(on_error=lambda exc, event: None)
+        bus.register(DoTheThing, _raises("cmd"))
+        with pytest.raises(RuntimeError, match="cmd"):
+            bus.handle(DoTheThing(value=1))
+
 
 class TestMessageBusDomainEventDraining:
     def test_domain_events_from_uow_are_queued(self):

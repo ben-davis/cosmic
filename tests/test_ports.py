@@ -1,20 +1,36 @@
-"""The concrete implementations must satisfy the Repository / UnitOfWork ports."""
+"""The concrete implementations must satisfy the ports they claim to.
+
+The ports exist so an app can drive handlers with in-memory fakes; if a port
+drifts from what the machinery actually calls, those fakes stop being evidence.
+"""
 from sqlalchemy.orm import sessionmaker
 
-from fastapi_resources import (
-    Repository,
-    SqlAlchemyUnitOfWork,
-    UnitOfWork,
-    build_sqlalchemy_repo,
-)
-from tests.resources.sqlalchemy_models import Galaxy, engine
+from fastapi_resources import Repository, SqlAlchemyUnitOfWork, UnitOfWork
+from tests.resources.sqlalchemy_models import GalaxyRepo, engine
 
 
-def test_sqlalchemy_repo_satisfies_repository_port():
-    repo = build_sqlalchemy_repo(Galaxy)(session=None)
+def test_aggregate_repo_satisfies_repository_port():
+    # Port conformance only — the session is never touched.
+    repo = GalaxyRepo(session=None)  # ty: ignore[invalid-argument-type]
     assert isinstance(repo, Repository)
 
 
 def test_sqlalchemy_uow_satisfies_unit_of_work_port():
     uow = SqlAlchemyUnitOfWork(sessionmaker(engine))
     assert isinstance(uow, UnitOfWork)
+
+
+def test_unit_of_work_port_covers_what_the_bus_calls():
+    """Regression guard: the bus calls collect_new_events after every command.
+
+    It used to be absent from the port while `repo_for` — which nothing calls —
+    was present, so a conforming fake could silently swallow every domain event.
+    """
+    assert hasattr(UnitOfWork, "collect_new_events")
+
+    class UoWMissingEventCollection:
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def commit(self): return None
+
+    assert not isinstance(UoWMissingEventCollection(), UnitOfWork)

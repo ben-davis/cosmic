@@ -1,10 +1,11 @@
-"""Minimal ORM models + repos for the repository/uow/ports tests."""
+"""Minimal aggregate models + repos for the repository / uow / ports tests."""
+from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import ForeignKey, create_engine
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from fastapi_resources import build_sqlalchemy_repo
+from fastapi_resources import AggregateRoot, build_aggregate_repo
 from tests.resources.sqlalchemy_base import Base
 
 engine = create_engine(
@@ -12,18 +13,9 @@ engine = create_engine(
 )
 
 
-class Galaxy(Base):
-    __tablename__ = "galaxy"
-
-    id: Mapped[int] = mapped_column(primary_key=True, init=False)
-    name: Mapped[str]
-
-    stars: Mapped[list["Star"]] = relationship(
-        back_populates="galaxy", default_factory=list
-    )
-
-
 class Star(Base):
+    """A child entity — reached only through its Galaxy."""
+
     __tablename__ = "star"
 
     id: Mapped[int] = mapped_column(primary_key=True, init=False)
@@ -31,20 +23,34 @@ class Star(Base):
     color: Mapped[str] = mapped_column(default="")
 
     galaxy_id: Mapped[Optional[int]] = mapped_column(
-        ForeignKey("galaxy.id"), default=None
+        ForeignKey("galaxy.id"), default=None, init=False
     )
-    galaxy: Mapped[Optional[Galaxy]] = relationship(back_populates="stars", default=None)
+    galaxy: Mapped[Optional["Galaxy"]] = relationship(
+        back_populates="stars", default=None
+    )
 
 
-GalaxyRepo = build_sqlalchemy_repo(Galaxy)
+class Galaxy(AggregateRoot, Base):
+    """An aggregate root owning Stars."""
 
-_StarBaseRepo = build_sqlalchemy_repo(Star)
+    __tablename__ = "galaxy"
+
+    id: Mapped[int] = mapped_column(primary_key=True, init=False)
+    name: Mapped[str]
+    discovered_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+    owner: Mapped[str] = mapped_column(default="")
+
+    stars: Mapped[list[Star]] = relationship(
+        back_populates="galaxy", cascade="all, delete-orphan", default_factory=list
+    )
 
 
-class StarFilteredRepo(_StarBaseRepo):
-    """Star repo with optional name filtering via context."""
+GalaxyRepo = build_aggregate_repo(Galaxy, load=["stars"])
 
-    def get_where(self, method):
-        if name := self.context.get("only_name"):
-            return [Star.name == name]
-        return []
+# Scoped by owner, and paginated newest-first by discovery date.
+OwnedGalaxyRepo = build_aggregate_repo(
+    Galaxy,
+    load=["stars"],
+    scope=lambda ctx: [Galaxy.owner == ctx["owner"]] if ctx.get("owner") else [],
+    sort=(Galaxy.discovered_at, True),
+)

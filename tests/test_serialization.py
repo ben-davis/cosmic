@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from fastapi_resources import AggregateSchema, Child, serialize, serialize_many
+from fastapi_resources import AggregateSchema, Child, Ref, serialize, serialize_many
 
 
 @dataclass
@@ -61,3 +61,71 @@ def test_serialize_many_dedupes_included_and_counts():
     assert doc["meta"]["count"] == 2
     assert len(doc["data"]) == 2
     assert len(doc["included"]) == 1  # same item id deduped across roots
+
+
+# --- cross-aggregate references (Ref) ---
+
+
+@dataclass
+class FakeOrder:
+    id: str
+    cart_id: str
+    coupon_id: str | None
+
+
+class OrderRead(BaseModel):
+    id: str
+
+
+ORDER = AggregateSchema(
+    type="order",
+    read=OrderRead,
+    refs=[Ref(attr="cart_id", type="cart"), Ref(attr="coupon_id", type="coupon")],
+)
+
+
+def test_ref_becomes_a_relationship_named_without_the_id_suffix():
+    doc = serialize(FakeOrder(id="o1", cart_id="c1", coupon_id=None), ORDER)
+    assert doc["data"]["relationships"]["cart"]["data"] == {"type": "cart", "id": "c1"}
+
+
+def test_ref_emits_no_included_body():
+    """A referenced aggregate is not owned here, so this document must not
+    speak for its contents — only point at it."""
+    doc = serialize(FakeOrder(id="o1", cart_id="c1", coupon_id=None), ORDER)
+    assert "included" not in doc
+
+
+def test_optional_ref_serializes_as_null_relationship():
+    doc = serialize(FakeOrder(id="o1", cart_id="c1", coupon_id=None), ORDER)
+    assert doc["data"]["relationships"]["coupon"] == {"data": None}
+
+
+def test_ref_name_can_be_overridden():
+    schema = AggregateSchema(
+        type="order",
+        read=OrderRead,
+        refs=[Ref(attr="cart_id", type="cart", name="basket")],
+    )
+    doc = serialize(FakeOrder(id="o1", cart_id="c1", coupon_id=None), schema)
+    assert "basket" in doc["data"]["relationships"]
+
+
+# --- pagination links ---
+
+
+def test_no_next_link_without_a_cursor():
+    doc = serialize_many([_cart()], SCHEMA, self_url="/carts")
+    assert doc["links"] == {"self": "/carts"}
+
+
+def test_next_link_carries_the_cursor():
+    doc = serialize_many([_cart()], SCHEMA, self_url="/carts", next_cursor="abc")
+    assert doc["links"]["next"] == "/carts?page[cursor]=abc"
+
+
+def test_next_link_appends_to_an_existing_query_string():
+    doc = serialize_many(
+        [_cart()], SCHEMA, self_url="/carts?sort=name", next_cursor="abc"
+    )
+    assert doc["links"]["next"] == "/carts?sort=name&page[cursor]=abc"
