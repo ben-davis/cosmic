@@ -37,14 +37,21 @@ class MessageBus:
             raise ValueError(f"{message_type} is not a Command or Event subclass")
 
     def handle(self, message, uow=None):
-        """Dispatch a command (with its UoW) or an event, draining domain events."""
+        """Dispatch a command (with its UoW) or an event, draining domain events.
+
+        Returns the result of the message it was *called* with, never that of a
+        follow-on command drained from the queue: the caller asked for one thing
+        and has no way to know what else the queue picked up on the way.
+        """
         queue = [message]
         result = None
 
         while queue:
             msg = queue.pop(0)
             if isinstance(msg, Command):
-                result = self._handle_command(msg, uow, queue)
+                returned = self._handle_command(msg, uow, queue)
+                if msg is message:
+                    result = returned
             elif isinstance(msg, Event):
                 self._handle_event(msg, queue)
 

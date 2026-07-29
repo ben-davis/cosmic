@@ -20,10 +20,7 @@ class GalaxyDiscovered(Event):
 
 
 class GalaxyUnitOfWork(SqlAlchemyUnitOfWork):
-    def __enter__(self):
-        super().__enter__()
-        self.galaxies = GalaxyRepo(self.session)
-        return self
+    repos = {"galaxies": GalaxyRepo}
 
 
 @pytest.fixture(autouse=True)
@@ -104,3 +101,40 @@ def test_objects_never_seen_by_a_repo_contribute_no_events(uow):
         uow.commit()
 
     assert list(uow.collect_new_events()) == []
+
+
+def test_explicitly_tracked_root_is_drained(uow):
+    """`track` is the supported way to reach a root outside a repository."""
+    with uow:
+        stray = Galaxy(name="Tracked")
+        stray.record(GalaxyDiscovered(name="Tracked"))
+        uow.session.add(stray)
+        uow.track(stray)
+        uow.commit()
+
+    assert [type(e) for e in uow.collect_new_events()] == [GalaxyDiscovered]
+
+
+def test_a_repo_attached_outside_repos_is_an_error_not_a_silent_drop(uow):
+    """The failure mode this whole mechanism exists to avoid.
+
+    A repository the UoW does not know about drains nothing, and a lost domain
+    event looks exactly like a feature that was never wired up. Refuse to commit
+    rather than let that pass.
+    """
+    with uow:
+        uow.extra_galaxies = GalaxyRepo(uow.session)  # not declared in `repos`
+        with pytest.raises(RuntimeError, match="extra_galaxies"):
+            uow.commit()
+
+
+def test_an_unscoped_view_may_be_assigned(uow):
+    """It shares its parent's `seen`, so nothing is lost by holding onto one."""
+    with uow:
+        uow.any_galaxy = uow.galaxies.unscoped()
+        galaxy = Galaxy(name="Wide")
+        galaxy.record(GalaxyDiscovered(name="Wide"))
+        uow.any_galaxy.add(galaxy)
+        uow.commit()
+
+    assert [type(e) for e in uow.collect_new_events()] == [GalaxyDiscovered]

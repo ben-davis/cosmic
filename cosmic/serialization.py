@@ -22,6 +22,17 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 
+def _require_id_field(read: type[BaseModel], label: str) -> None:
+    """Every resource object needs an `id`; catch a schema missing one on import.
+
+    `_resource_object` pops `id` out of the dumped attributes, so a read schema
+    without one fails with a bare `KeyError` on the first request that happens to
+    serialize it — far from the declaration that is actually wrong.
+    """
+    if "id" not in read.model_fields:
+        raise ValueError(f"{label}: read schema {read.__name__} must declare an `id`")
+
+
 @dataclass
 class Child:
     """An entity owned by this aggregate — relationship + `included` body."""
@@ -30,6 +41,14 @@ class Child:
     type: str                 # JSON:API type for the child (e.g. "calendar_member")
     read: type[BaseModel]     # pydantic read schema for the child (must include `id`)
     many: bool = True
+    name: Optional[str] = None  # relationship name; defaults to `attr`
+
+    def __post_init__(self) -> None:
+        _require_id_field(self.read, f"Child({self.attr!r})")
+
+    @property
+    def relationship_name(self) -> str:
+        return self.name or self.attr
 
 
 @dataclass
@@ -56,6 +75,9 @@ class AggregateSchema:
     children: list[Child] = field(default_factory=list)
     refs: list[Ref] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        _require_id_field(self.read, f"AggregateSchema({self.type!r})")
+
 
 def _resource_object(obj: Any, type_: str, read: type[BaseModel]) -> dict:
     dumped = read.model_validate(obj, from_attributes=True).model_dump(mode="json")
@@ -73,12 +95,12 @@ def serialize(root: Any, schema: AggregateSchema, *, self_url: Optional[str] = N
         value = getattr(root, child.attr)
         if child.many:
             items = list(value or [])
-            relationships[child.attr] = {
+            relationships[child.relationship_name] = {
                 "data": [{"type": child.type, "id": str(i.id)} for i in items]
             }
             included.extend(_resource_object(i, child.type, child.read) for i in items)
         else:
-            relationships[child.attr] = {
+            relationships[child.relationship_name] = {
                 "data": ({"type": child.type, "id": str(value.id)} if value else None)
             }
             if value is not None:

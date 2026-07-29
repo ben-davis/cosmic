@@ -1,4 +1,4 @@
-"""Spine test for the aggregate profile: AggregateRoot + build_aggregate_repo
+"""Spine test for the aggregate profile: AggregateRoot + AggregateRepository
 (scope + .seen) + UnitOfWork event collection + MessageBus.handle(cmd, uow) + projectors."""
 import dataclasses
 
@@ -8,13 +8,14 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,
 from sqlalchemy.pool import StaticPool
 
 from cosmic import (
+    AggregateRepository,
     AggregateRoot,
     Command,
+    Context,
     Event,
     MessageBus,
     NotFound,
     SqlAlchemyUnitOfWork,
-    build_aggregate_repo,
 )
 
 
@@ -46,21 +47,18 @@ class Cart(AggregateRoot, Base):
         self.record(ItemAdded(cart_id=self.id, name=name))
 
 
-CartRepo = build_aggregate_repo(
-    Cart, load=["items"],
-    scope=lambda ctx: [Cart.owner == ctx["owner"]] if ctx.get("owner") else [],
-)
+class CartRepo(AggregateRepository):
+    Db = Cart
+    load = ("items",)
+
+    def scope(self) -> list:
+        if self.context.principal is None:
+            return []
+        return [Cart.owner == self.context.principal]
 
 
 class CartUnitOfWork(SqlAlchemyUnitOfWork):
-    def __init__(self, session_factory, owner=None):
-        super().__init__(session_factory)
-        self.owner = owner
-
-    def __enter__(self):
-        super().__enter__()
-        self.carts = CartRepo(self.session, context={"owner": self.owner})
-        return self
+    repos = {"carts": CartRepo}
 
 
 # --- command + handler + projector ---
@@ -99,7 +97,7 @@ def bus():
 
 
 def test_command_loads_root_mutates_and_commits(sf, bus):
-    cart_id = bus.handle(AddItem(cart_id=1, item_id=10, name="apples"), uow=CartUnitOfWork(sf, owner="alice"))
+    cart_id = bus.handle(AddItem(cart_id=1, item_id=10, name="apples"), uow=CartUnitOfWork(sf, Context(principal="alice")))
     assert cart_id == 1
     with sf() as s:
         assert [i.name for i in s.scalars(select(Item)).all()] == ["apples"]
@@ -109,11 +107,11 @@ def test_domain_event_collected_from_seen_and_dispatched_to_projector(sf, bus):
     projected: list = []
     bus.register(ItemAdded, lambda e: projected.append((e.cart_id, e.name)))
 
-    bus.handle(AddItem(cart_id=1, item_id=11, name="pears"), uow=CartUnitOfWork(sf, owner="alice"))
+    bus.handle(AddItem(cart_id=1, item_id=11, name="pears"), uow=CartUnitOfWork(sf, Context(principal="alice")))
 
     assert projected == [(1, "pears")]
 
 
 def test_root_scope_hides_other_owners(sf, bus):
     with pytest.raises(NotFound):
-        bus.handle(AddItem(cart_id=1, item_id=12, name="x"), uow=CartUnitOfWork(sf, owner="bob"))
+        bus.handle(AddItem(cart_id=1, item_id=12, name="x"), uow=CartUnitOfWork(sf, Context(principal="bob")))

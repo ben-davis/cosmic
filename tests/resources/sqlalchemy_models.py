@@ -1,11 +1,12 @@
 """Minimal aggregate models + repos for the repository / uow / ports tests."""
 from datetime import datetime
 from typing import Optional
+from uuid import uuid4
 
 from sqlalchemy import ForeignKey, create_engine
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from cosmic import AggregateRoot, build_aggregate_repo
+from cosmic import AggregateRepository, AggregateRoot
 from tests.resources.sqlalchemy_base import Base
 
 engine = create_engine(
@@ -45,12 +46,49 @@ class Galaxy(AggregateRoot, Base):
     )
 
 
-GalaxyRepo = build_aggregate_repo(Galaxy, load=["stars"])
+class GalaxyRepo(AggregateRepository):
+    Db = Galaxy
+    load = ("stars",)
 
-# Scoped by owner, and paginated newest-first by discovery date.
-OwnedGalaxyRepo = build_aggregate_repo(
-    Galaxy,
-    load=["stars"],
-    scope=lambda ctx: [Galaxy.owner == ctx["owner"]] if ctx.get("owner") else [],
-    sort=(Galaxy.discovered_at, True),
-)
+
+class OwnedGalaxyRepo(AggregateRepository):
+    """Scoped to the principal, paginated newest-first by discovery date."""
+
+    Db = Galaxy
+    load = ("stars",)
+    sort = (Galaxy.discovered_at, True)
+
+    def scope(self) -> list:
+        if self.context.principal is None:
+            return []
+        return [Galaxy.owner == self.context.principal]
+
+
+class Comet(AggregateRoot, Base):
+    """A root with an **app-assigned** id, for the repository contract suite.
+
+    `add()` deliberately does not flush, because the apps this library targets
+    generate their own PKs (uuid7) — so a root has an identity before it is
+    persisted, and an in-memory double can hold one that behaves the same.
+    A database-assigned autoincrement id (as `Galaxy` uses) cannot: it is `None`
+    until flush, so every unsaved root would collide with every other.
+    """
+
+    __tablename__ = "comet"
+
+    id: Mapped[str] = mapped_column(
+        primary_key=True, default_factory=lambda: str(uuid4())
+    )
+    name: Mapped[str] = mapped_column(default="")
+    owner: Mapped[str] = mapped_column(default="")
+    seen_at: Mapped[Optional[datetime]] = mapped_column(default=None)
+
+
+class CometRepo(AggregateRepository):
+    Db = Comet
+    sort = (Comet.seen_at, True)
+
+    def scope(self) -> list:
+        if self.context.principal is None:
+            return []
+        return [Comet.owner == self.context.principal]

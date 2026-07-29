@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import pytest
 from sqlalchemy.orm import Session
 
-from cosmic import MAX_PAGE_SIZE, InvalidCursor, NotFound
+from cosmic import MAX_PAGE_SIZE, Context, InvalidCursor, NotFound
 from tests.resources.sqlalchemy_base import Base
 from tests.resources.sqlalchemy_models import (
     Galaxy,
@@ -62,7 +62,7 @@ class TestGet:
 
     def test_out_of_scope_root_is_not_found(self, session):
         galaxy = _make(session, "Alice's", owner="alice")
-        repo = OwnedGalaxyRepo(session, context={"owner": "bob"})
+        repo = OwnedGalaxyRepo(session, context=Context(principal="bob"))
         with pytest.raises(NotFound):
             repo.get(galaxy.id)
 
@@ -72,7 +72,7 @@ class TestList:
         _make(session, "Alice's", owner="alice")
         _make(session, "Bob's", owner="bob")
 
-        rows, _ = OwnedGalaxyRepo(session, context={"owner": "alice"}).list()
+        rows, _ = OwnedGalaxyRepo(session, context=Context(principal="alice")).list()
         assert [g.name for g in rows] == ["Alice's"]
 
     def test_list_orders_by_declared_sort_descending(self, session):
@@ -80,7 +80,7 @@ class TestList:
         _make(session, "new", minutes=10)
         _make(session, "middle", minutes=5)
 
-        rows, _ = OwnedGalaxyRepo(session, context={"owner": "alice"}).list()
+        rows, _ = OwnedGalaxyRepo(session, context=Context(principal="alice")).list()
         assert [g.name for g in rows] == ["new", "middle", "old"]
 
     def test_list_defaults_to_pk_order_when_no_sort_declared(self, session):
@@ -92,7 +92,7 @@ class TestList:
 
     def test_no_next_cursor_on_last_page(self, session):
         _make(session, "only")
-        rows, next_cursor = OwnedGalaxyRepo(session, context={"owner": "alice"}).list()
+        rows, next_cursor = OwnedGalaxyRepo(session, context=Context(principal="alice")).list()
         assert len(rows) == 1
         assert next_cursor is None
 
@@ -100,7 +100,7 @@ class TestList:
         for i in range(7):
             _make(session, f"g{i}", minutes=i)
 
-        repo = OwnedGalaxyRepo(session, context={"owner": "alice"})
+        repo = OwnedGalaxyRepo(session, context=Context(principal="alice"))
         seen, cursor, pages = [], None, 0
         while True:
             rows, cursor = repo.list(limit=3, cursor=cursor)
@@ -120,7 +120,7 @@ class TestList:
         for i in range(6):
             _make(session, f"tie{i}", minutes=0)
 
-        repo = OwnedGalaxyRepo(session, context={"owner": "alice"})
+        repo = OwnedGalaxyRepo(session, context=Context(principal="alice"))
         seen, cursor = [], None
         while True:
             rows, cursor = repo.list(limit=2, cursor=cursor)
@@ -136,7 +136,7 @@ class TestList:
             _make(session, f"alice{i}", owner="alice", minutes=i)
             _make(session, f"bob{i}", owner="bob", minutes=i)
 
-        repo = OwnedGalaxyRepo(session, context={"owner": "alice"})
+        repo = OwnedGalaxyRepo(session, context=Context(principal="alice"))
         seen, cursor = [], None
         while True:
             rows, cursor = repo.list(limit=2, cursor=cursor)
@@ -149,19 +149,19 @@ class TestList:
 
     def test_limit_is_clamped_to_max_page_size(self, session):
         _make(session, "one")
-        rows, _ = OwnedGalaxyRepo(session, context={"owner": "alice"}).list(
+        rows, _ = OwnedGalaxyRepo(session, context=Context(principal="alice")).list(
             limit=MAX_PAGE_SIZE * 10
         )
         assert len(rows) == 1  # clamped, not rejected
 
     def test_malformed_cursor_raises_invalid_cursor(self, session):
-        repo = OwnedGalaxyRepo(session, context={"owner": "alice"})
+        repo = OwnedGalaxyRepo(session, context=Context(principal="alice"))
         with pytest.raises(InvalidCursor):
             repo.list(cursor="not-a-real-cursor!!")
 
     def test_listed_roots_are_recorded_in_seen(self, session):
         _make(session, "tracked")
-        repo = OwnedGalaxyRepo(session, context={"owner": "alice"})
+        repo = OwnedGalaxyRepo(session, context=Context(principal="alice"))
         rows, _ = repo.list()
         assert len(repo.seen) == len(rows) == 1
 
