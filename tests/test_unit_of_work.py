@@ -9,7 +9,7 @@ import dataclasses
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from fastapi_resources import Event, SqlAlchemyUnitOfWork
+from cosmic import Event, SqlAlchemyUnitOfWork
 from tests.resources.sqlalchemy_base import Base
 from tests.resources.sqlalchemy_models import Galaxy, GalaxyRepo, Star, engine
 

@@ -1,13 +1,14 @@
-# fastapi-resources Architecture Invariants
+# cosmic — Architecture Invariants
 
 These are the rules of this library as it exists now. It is a small
 **cosmicpython-style aggregate framework**: it provides the message-bus / unit-of-work /
 repository / domain-event machinery for building aggregate-oriented apps, plus a
 JSON:API **compound-document serializer** for reads and command responses.
 
-> Note: the name is historical. This library no longer generates CRUD, resources,
-> or JSON:API routing. HTTP routing lives in the consuming app (thin FastAPI
-> adapters that call `serialize()`), not here.
+> Renamed from `fastapi-resources`, which described what it used to be — a CRUD
+> and JSON:API *routing* generator. None of that survives. There is no HTTP,
+> FastAPI, or routing code here; routing lives in the consuming app as thin
+> adapters that call `serialize()`.
 
 ---
 
@@ -24,7 +25,7 @@ A toolkit of independent pieces that work together:
 - **`Repository` / `UnitOfWork` ports** — Protocols the service layer types against
 - **`NotFound` / `InvalidCursor`** — the shared exceptions (→ HTTP 404 / 400 in the app)
 
-Everything is exported from `fastapi_resources/__init__.py`. There is no HTTP,
+Everything is exported from `cosmic/__init__.py`. There is no HTTP,
 FastAPI, or JSON:API *routing* code in this library.
 
 ---
@@ -256,7 +257,7 @@ call site in the bus or UoW, update the port in the same change.
 ## Module Reference
 
 ```
-fastapi_resources/
+cosmic/
 ├── __init__.py         # public exports (see "What This Library Is")
 ├── domain.py           # Command, Event, AggregateRoot
 ├── message_bus.py      # MessageBus (handle(message, uow))

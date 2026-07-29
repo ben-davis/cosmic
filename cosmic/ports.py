@@ -7,7 +7,7 @@ it belongs here; if nothing calls it, it does not.
 """
 from typing import Any, Iterator, Optional, Protocol, runtime_checkable
 
-from fastapi_resources.domain import Event
+from cosmic.domain import Event
 
 
 @runtime_checkable

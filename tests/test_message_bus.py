@@ -1,7 +1,7 @@
 import pytest
 
-from fastapi_resources.domain import Command, Event
-from fastapi_resources.message_bus import MessageBus
+from cosmic.domain import Command, Event
+from cosmic.message_bus import MessageBus
 import dataclasses
 
 

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from fastapi_resources import AggregateSchema, Child, Ref, serialize, serialize_many
+from cosmic import AggregateSchema, Child, Ref, serialize, serialize_many
 
 
 @dataclass

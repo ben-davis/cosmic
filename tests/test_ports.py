@@ -5,7 +5,7 @@ drifts from what the machinery actually calls, those fakes stop being evidence.
 """
 from sqlalchemy.orm import sessionmaker
 
-from fastapi_resources import Repository, SqlAlchemyUnitOfWork, UnitOfWork
+from cosmic import Repository, SqlAlchemyUnitOfWork, UnitOfWork
 from tests.resources.sqlalchemy_models import GalaxyRepo, engine
 
 

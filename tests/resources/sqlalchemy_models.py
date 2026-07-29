@@ -5,7 +5,7 @@ from typing import Optional
 from sqlalchemy import ForeignKey, create_engine
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from fastapi_resources import AggregateRoot, build_aggregate_repo
+from cosmic import AggregateRoot, build_aggregate_repo
 from tests.resources.sqlalchemy_base import Base
 
 engine = create_engine(

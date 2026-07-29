@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import pytest
 from sqlalchemy.orm import Session
 
-from fastapi_resources import MAX_PAGE_SIZE, InvalidCursor, NotFound
+from cosmic import MAX_PAGE_SIZE, InvalidCursor, NotFound
 from tests.resources.sqlalchemy_base import Base
 from tests.resources.sqlalchemy_models import (
     Galaxy,

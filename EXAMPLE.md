@@ -1,4 +1,4 @@
-# fastapi-resources — Full Example
+# cosmic — Full Example
 
 This file shows the complete picture of how the library is used, from models to running app. It uses a Galaxy / Star / Planet domain throughout.
 
@@ -84,7 +84,7 @@ The library provides `MessageBus`. Create one instance for the application. All 
 
 ```python
 # bus.py
-from fastapi_resources import MessageBus
+from cosmic import MessageBus
 
 bus = MessageBus()
 ```
@@ -97,7 +97,7 @@ bus = MessageBus()
 
 ```python
 # repositories.py
-from fastapi_resources.repositories import build_sqlalchemy_repo
+from cosmic.repositories import build_sqlalchemy_repo
 
 # Simple case — fully generated, no customisation needed
 GalaxyRepo = build_sqlalchemy_repo(Galaxy)
@@ -120,7 +120,7 @@ Compose repositories into a UoW. Handlers receive it as a default parameter — 
 ```python
 # unit_of_work.py
 from sqlalchemy.orm import sessionmaker
-from fastapi_resources.unit_of_work import SqlAlchemyUnitOfWork
+from cosmic.unit_of_work import SqlAlchemyUnitOfWork
 from repositories import GalaxyRepo, StarRepo
 
 DEFAULT_SESSION_FACTORY = sessionmaker(bind=engine)
@@ -145,7 +145,7 @@ Commands, handlers, and the resource are defined separately. Commands can live i
 
 ```python
 # domain/commands/galaxy.py
-from fastapi_resources.domain import build_commands
+from cosmic.domain import build_commands
 from schemas import GalaxyCreate, GalaxyUpdate
 from models import Galaxy
 
@@ -164,7 +164,7 @@ GalaxyCommands = build_commands(
 
 ```python
 # shell/handlers/galaxy.py
-from fastapi_resources.handlers import build_handlers
+from cosmic.handlers import build_handlers
 from domain.commands.galaxy import GalaxyCommands
 from unit_of_work import default_uow
 from models import Galaxy
@@ -181,7 +181,7 @@ GalaxyHandlers = build_handlers(
 
 ```python
 # shell/resources/galaxy.py
-from fastapi_resources.resources import build_sqlalchemy_resource
+from cosmic.resources import build_sqlalchemy_resource
 from models import Galaxy
 from schemas import GalaxyRead, GalaxyCreate, GalaxyUpdate
 from domain.commands.galaxy import GalaxyCommands
@@ -213,7 +213,7 @@ Commands live in `domain/` as plain frozen dataclasses:
 ```python
 # domain/commands/star.py
 from dataclasses import dataclass, field
-from fastapi_resources.domain import Command
+from cosmic.domain import Command
 
 @dataclass(frozen=True)
 class CreateStar(Command):
@@ -236,8 +236,8 @@ class DeleteStar(Command):
 
 ```python
 # shell/resources/star.py
-from fastapi_resources.resources.sqlalchemy import SQLAlchemyResource
-from fastapi_resources.resources.sqlalchemy.paginators import LimitOffsetPaginator
+from cosmic.resources.sqlalchemy import SQLAlchemyResource
+from cosmic.resources.sqlalchemy.paginators import LimitOffsetPaginator
 from models import Star
 from schemas import StarRead, StarCreate, StarUpdate
 from repositories import StarRepo
@@ -283,7 +283,7 @@ All handlers — generated defaults and hand-written custom ones — are registe
 
 ```python
 # bus.py
-from fastapi_resources import MessageBus
+from cosmic import MessageBus
 from domain.commands.galaxy import GalaxyCommands
 from domain.commands.star import CreateStar, UpdateStar, DeleteStar, StarCommands
 from shell.handlers.galaxy import GalaxyHandlers
@@ -342,7 +342,7 @@ bus.register(GalaxyCreated, on_galaxy_created)
 ```python
 # app.py
 from fastapi import FastAPI
-from fastapi_resources.routers import JSONAPIResourceRouter
+from cosmic.routers import JSONAPIResourceRouter
 from resources import GalaxyResource, StarResource
 from bus import bus
 

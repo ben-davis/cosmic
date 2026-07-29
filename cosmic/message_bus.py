@@ -2,7 +2,7 @@ import logging
 from collections import defaultdict
 from typing import Any, Callable, Optional
 
-from fastapi_resources.domain import Command, Event
+from cosmic.domain import Command, Event
 
 logger = logging.getLogger(__name__)
 

@@ -1,15 +1,15 @@
 [tool.poetry]
-name = "fastapi-resources"
-version = "0.6.0"
-description = ""
+name = "cosmic"
+version = "1.0.0"
+description = "A cosmicpython-style aggregate framework: message bus, unit of work, aggregate repositories, and a JSON:API compound-document serializer."
 authors = ["Ben Davis <ben@bencdavis.com>"]
 packages = [
-    { include = "fastapi_resources" }
+    { include = "cosmic" }
 ]
 
 [tool.poetry.dependencies]
 python = "^3.12"
-fastapi = "^0.111.0"
+# No fastapi: nothing here imports it. HTTP routing lives in the consuming app.
 sqlalchemy = "^2.0.30"
 pydantic = "^2.0.2"
 

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Iterator
 
-from fastapi_resources.domain import Event
+from cosmic.domain import Event
 
 
 class AbstractUnitOfWork(ABC):

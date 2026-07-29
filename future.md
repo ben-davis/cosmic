@@ -1,4 +1,4 @@
-We want to move to CQRS. So fastapi-resources needs a message bus.
+We want to move to CQRS. So cosmic needs a message bus.
 
 The factories should build resources by composing functions (like I was going to do to begin with). Out of the box, a resource factory builds a resource by just taking the model, then applying the default mixins. Or perhaps we always supply the mixins.
 

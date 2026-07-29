@@ -15,7 +15,7 @@ from typing import Any, Optional
 from sqlalchemy import inspect as sa_inspect, select, tuple_
 from sqlalchemy.orm import Session, selectinload
 
-from fastapi_resources.exceptions import NotFound
+from cosmic.exceptions import NotFound
 
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200

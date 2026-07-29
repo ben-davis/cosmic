@@ -7,7 +7,7 @@ from sqlalchemy import ForeignKey, create_engine, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from fastapi_resources import (
+from cosmic import (
     AggregateRoot,
     Command,
     Event,
