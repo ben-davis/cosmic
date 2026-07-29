@@ -112,6 +112,11 @@ def serialize_many(
 
     `meta.count` is the size of *this page*. When `next_cursor` is given, a
     `links.next` is emitted — cursor clients treat its absence as "last page".
+
+    **`links.next` is the bare cursor token, not a URL.** JSON:API specifies a URL
+    there; this deliberately deviates. The client sends the value straight back as
+    `page[cursor]`, so a URL would round-trip as a malformed cursor and 400. Treat
+    it as opaque — do not parse or construct it.
     """
     data: list = []
     included: list = []
@@ -133,9 +138,8 @@ def serialize_many(
     links: dict = {}
     if self_url:
         links["self"] = self_url
-        if next_cursor:
-            joiner = "&" if "?" in self_url else "?"
-            links["next"] = f"{self_url}{joiner}page[cursor]={next_cursor}"
+    if next_cursor:
+        links["next"] = next_cursor
     if links:
         document["links"] = links
     return document

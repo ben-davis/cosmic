@@ -119,13 +119,24 @@ def test_no_next_link_without_a_cursor():
     assert doc["links"] == {"self": "/carts"}
 
 
-def test_next_link_carries_the_cursor():
+def test_next_link_is_the_bare_cursor_token_not_a_url():
+    """Deliberate deviation from JSON:API, which specifies a URL here.
+
+    The client echoes this value straight back as `page[cursor]`, so anything
+    URL-shaped round-trips as a malformed cursor and 400s.
+    """
     doc = serialize_many([_cart()], SCHEMA, self_url="/carts", next_cursor="abc")
-    assert doc["links"]["next"] == "/carts?page[cursor]=abc"
+    assert doc["links"]["next"] == "abc"
+    assert "?" not in doc["links"]["next"]
 
 
-def test_next_link_appends_to_an_existing_query_string():
+def test_next_link_ignores_the_self_url_query_string():
     doc = serialize_many(
         [_cart()], SCHEMA, self_url="/carts?sort=name", next_cursor="abc"
     )
-    assert doc["links"]["next"] == "/carts?sort=name&page[cursor]=abc"
+    assert doc["links"] == {"self": "/carts?sort=name", "next": "abc"}
+
+
+def test_next_link_is_emitted_without_a_self_url():
+    doc = serialize_many([_cart()], SCHEMA, next_cursor="abc")
+    assert doc["links"] == {"next": "abc"}
