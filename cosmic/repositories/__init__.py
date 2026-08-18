@@ -65,6 +65,7 @@ class AggregateRepository:
 
     Db: type                        # the aggregate root model
     load: tuple = ()                # child relationship attribute names to eager-load
+    list_load: Optional[tuple] = None  # eager-load for `list()` only; defaults to `load`
     sort: Optional[tuple] = None    # (column, descending)
     id_field: Optional[str] = None  # identity column; defaults to the PK
 
@@ -116,14 +117,19 @@ class AggregateRepository:
             return self.sort
         return (self._pk(), False)
 
-    def _base_select(self):
+    def _base_select(self, *, for_list: bool = False):
         """A scoped select of the root with its child collections eager-loaded.
 
         Shared by `get`, `list`, and `find_one` so a root can never be visible to
-        one of them and hidden from another.
+        one of them and hidden from another — row-level scope always applies to
+        all three alike. Eager-loading can still differ: `list()` usually feeds a
+        lightweight summary schema that needs none of the children a `get()`
+        detail view does, so pass `for_list=True` to load `list_load` instead of
+        `load` (both eager-load the same relationships by default).
         """
         stmt = select(self.Db)
-        for rel in self.load:
+        load = self.list_load if for_list and self.list_load is not None else self.load
+        for rel in load:
             stmt = stmt.options(selectinload(getattr(self.Db, rel)))
         if self._scoped:
             for predicate in self.scope():
@@ -170,21 +176,28 @@ class AggregateRepository:
         root = self.session.scalars(stmt).unique().first()
         return self.track(root) if root is not None else None
 
-    def list(
-        self, *, limit: int = DEFAULT_PAGE_SIZE, cursor: Optional[str] = None
+    def _paginate(
+        self, stmt, *, limit: int = DEFAULT_PAGE_SIZE, cursor: Optional[str] = None
     ) -> tuple[list, Optional[str]]:
-        """Return one scoped page of roots plus the cursor for the next page.
+        """Keyset ("seek") pagination of `stmt` over ``(sort_column, pk)``.
 
-        Keyset ("seek") pagination over ``(sort_column, pk)`` — the PK breaks
-        ties so the ordering is total and a page boundary can neither duplicate
-        nor skip a row, which OFFSET cannot guarantee under concurrent writes.
-        Returns ``(roots, next_cursor)``; `next_cursor` is None on the last page.
+        The PK breaks ties so the ordering is total and a page boundary can
+        neither duplicate nor skip a row, which OFFSET cannot guarantee under
+        concurrent writes. Returns ``(roots, next_cursor)``; `next_cursor` is
+        None on the last page. `stmt` is whatever `list()` (or an override)
+        built — this only adds ordering, the cursor's keyset predicate, and
+        the limit.
+
+        Defined ahead of `list()` in this class body on purpose: once a
+        method is named `list`, that name shadows the builtin for every
+        annotation evaluated afterwards in the same class body, so a `list`
+        return-type annotation below it would resolve to the method, not
+        `builtins.list`.
         """
         limit = max(1, min(limit, MAX_PAGE_SIZE))
         sort_col, descending = self._sort()
         pk_col = self._pk()
 
-        stmt = self._base_select()
         if descending:
             stmt = stmt.order_by(sort_col.desc(), pk_col.desc())
         else:
@@ -211,6 +224,18 @@ class AggregateRepository:
                 getattr(last, sort_col.key), getattr(last, pk_col.key)
             )
         return rows, next_cursor
+
+    def list(
+        self, *, limit: int = DEFAULT_PAGE_SIZE, cursor: Optional[str] = None
+    ) -> tuple[list, Optional[str]]:
+        """Return one scoped page of roots plus the cursor for the next page.
+
+        No filters at this level — a subclass that needs them overrides `list()`
+        with its own named, typed keyword parameters, builds its filtered
+        statement, and hands it to `_paginate()`. That keeps every filter a
+        real, checkable parameter instead of a name matched at runtime.
+        """
+        return self._paginate(self._base_select(for_list=True), limit=limit, cursor=cursor)
 
     @staticmethod
     def _sort_python_type(sort_col) -> type:

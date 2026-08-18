@@ -11,7 +11,7 @@ and preserve every *other* query parameter into the next page. Leaving those to
 the caller left the two halves of one contract in two repositories, held together
 by a comment in each.
 """
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlencode
 
 from fastapi import Query
@@ -81,10 +81,17 @@ def read_list(
     repo: str,
     schema: AggregateSchema,
     page: Page,
+    **filters: Any,
 ) -> dict:
-    """List one page of roots through `uow.<repo>` and serialize it."""
+    """List one page of roots through `uow.<repo>` and serialize it.
+
+    Any keyword beyond the positional args is forwarded to the repo's
+    `list()` as a named filter — see `AggregateRepository.list`.
+    """
     with uow:
-        roots, next_cursor = getattr(uow, repo).list(limit=page.size, cursor=page.cursor)
+        roots, next_cursor = getattr(uow, repo).list(
+            limit=page.size, cursor=page.cursor, **filters
+        )
         return serialize_many(
             roots, schema, self_url=request_self_url(request), next_cursor=next_cursor
         )
